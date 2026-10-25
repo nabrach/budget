@@ -1,0 +1,10 @@
+# Your financial data never goes in git.
+data/
+*.db
+*.db-*
+# No CSV files at all: test data is made up and lives in tests/fixture_data.py.
+*.[cC][sS][vV]
+
+__pycache__/
+*.pyc
+.venv/
