@@ -1186,14 +1186,63 @@ async function settingsPage() {
     "div",
     {},
     h("h1", {}, "Settings"),
-    peopleSection(people),
-    budgetsSection(budgetData, categories, people, thisMonthTotals, lastMonthTotals),
-    rulesSection(rules, categories, ruleTargets, people),
-    categoriesSection(categories),
-    bankCategoriesSection(bankCategories, categories, ruleTargets),
-    accountsSection(accounts),
-    layoutsSection(layouts),
+    [
+      peopleSection(people),
+      budgetsSection(budgetData, categories, people, thisMonthTotals, lastMonthTotals),
+      rulesSection(rules, categories, ruleTargets, people),
+      categoriesSection(categories),
+      bankCategoriesSection(bankCategories, categories, ruleTargets),
+      accountsSection(accounts),
+      layoutsSection(layouts),
+    ].map(collapsible),
   );
+}
+
+// Settings sections fold away by clicking their heading. Which ones are folded
+// is remembered in this browser only (a convenience, so failures are ignored).
+const FOLDED_KEY = "budget.settings.folded";
+
+function foldedSections() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(FOLDED_KEY)) || []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveFolded(name, folded) {
+  try {
+    const names = foldedSections();
+    if (folded) names.add(name);
+    else names.delete(name);
+    localStorage.setItem(FOLDED_KEY, JSON.stringify([...names]));
+  } catch {
+    // Storage blocked: sections just start open next time.
+  }
+}
+
+function collapsible(section) {
+  const heading = section?.querySelector(":scope > h2");
+  if (!heading) return section;
+  const name = heading.firstChild.textContent.trim();
+  const id = `settings-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+  const body = h("div", { class: "section-body", id }, [...section.childNodes].filter((n) => n !== heading));
+  const toggle = h("button", { type: "button", class: "section-toggle", "aria-controls": id }, h("span", { class: "chevron", "aria-hidden": "true" }), [...heading.childNodes]);
+  const setFolded = (folded) => {
+    section.classList.toggle("folded", folded);
+    toggle.setAttribute("aria-expanded", String(!folded));
+    body.hidden = folded;
+  };
+  toggle.addEventListener("click", () => {
+    const folded = !section.classList.contains("folded");
+    setFolded(folded);
+    saveFolded(name, folded);
+  });
+  heading.replaceChildren(toggle);
+  section.replaceChildren(heading, body);
+  section.classList.add("collapsible");
+  setFolded(foldedSections().has(name));
+  return section;
 }
 
 // Spending per category id from "subcategory" totals, with each group's total

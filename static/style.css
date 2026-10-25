@@ -73,6 +73,28 @@ main { flex: 1; min-width: 0; padding: 28px 32px 64px; max-width: 1100px; outlin
 h1 { font-size: 24px; margin: 0 0 20px; }
 h2 { font-size: 17px; margin: 32px 0 12px; }
 h2 .count { color: var(--muted); font-weight: 400; }
+section.collapsible > h2 { margin: 24px 0 0; }
+section.collapsible > .section-body { margin-top: 12px; }
+.section-toggle {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.section-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.section-toggle:hover { color: var(--accent); }
+.section-toggle .chevron {
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  margin: 0 3px 4px 1px;
+  transition: transform 0.15s;
+}
+section.folded .section-toggle .chevron { transform: rotate(-45deg); margin: 0 3px 0 0; }
 p { margin: 0 0 12px; }
 .muted { color: var(--muted); }
 
