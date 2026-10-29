@@ -361,7 +361,7 @@ svg.chart .hair { stroke: var(--chart-axis); stroke-width: 1; }
 .tt-title { color: var(--ink-secondary); margin-bottom: 4px; }
 .tt-row { display: flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
 .tt-key.line { width: 12px; height: 2px; border-radius: 1px; }
-.tt-key.rect { width: 12px; height: 2px; border-radius: 1px; }
+.tt-key.rect { width: 10px; height: 10px; border-radius: 2px; }
 .tt-label { color: var(--ink-secondary); }
 
 /* Horizontal bars */

@@ -583,6 +583,7 @@ async function runImport(account, filename, text, options) {
     `${plural(result.rows_skipped, "duplicate")} skipped`,
   ];
   if (result.rows_pending) parts.push(`${result.rows_pending} pending left out until they clear`);
+  if (result.rows_zero) parts.push(`${result.rows_zero} for $0.00 left out`);
   let summary = parts.join(", ") + ".";
   if (result.uncategorized) {
     const n = result.uncategorized;

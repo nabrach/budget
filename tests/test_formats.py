@@ -126,6 +126,13 @@ class DebitCreditTest(unittest.TestCase):
         with self.assertRaisesRegex(FormatError, "more than one amount"):
             parse(CITI_HEADER + 'Cleared,10/22/2026,"X",$ 2.50,-$ 2.50\n')
 
+    def test_zero_amount_rows_are_left_out_and_counted(self):
+        text = CITI_HEADER + 'Cleared,09/10/2026,"MEMBERSHIP FEE",$ 0.00,\n' + 'Cleared,09/10/2026,"GROCERY",$ 40.00,\n'
+        parsed = parse(text)
+        self.assertEqual(([r.description for r in parsed.rows], parsed.zero), (["GROCERY"], 1))
+        single = parse("Date,Description,Amount\n10/01/2026,NOTICE,0.00\n10/02/2026,SHOP,-5\n")
+        self.assertEqual(([r.description for r in single.rows], single.zero), (["SHOP"], 1))
+
     def test_pending_rows_are_left_out_and_counted(self):
         text = CITI_HEADER + 'Pending,10/23/2026,"COFFEE",$ 4.50,\n' + 'Cleared,10/22/2026,"GROCERY",$ 40.00,\n'
         parsed = parse(text)

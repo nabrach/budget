@@ -144,6 +144,8 @@ class ParsedFile:
     rows: list[Row]
     # Rows left out because they haven't cleared yet.
     pending: int = 0
+    # Rows left out because their amount is $0.00, like a no-cost annual fee notice.
+    zero: int = 0
 
 
 def read_header(text: str) -> list[str]:
@@ -182,7 +184,7 @@ def parse_csv(text: str, layout: Layout, amount_sign: int = 1) -> ParsedFile:
     index = {}
     for i, name in enumerate(header):
         index.setdefault(name, i)
-    rows, errors, pending = [], [], 0
+    rows, errors, pending, zero = [], [], 0, 0
     for record in reader:
         if not any(cell.strip() for cell in record):
             continue
@@ -199,6 +201,8 @@ def parse_csv(text: str, layout: Layout, amount_sign: int = 1) -> ParsedFile:
                 error = error or e
         if is_pending:
             pending += 1
+        elif row and row.amount_cents == 0:
+            zero += 1
         elif row:
             rows.append(row)
         elif len(record) > len(header):
@@ -211,7 +215,7 @@ def parse_csv(text: str, layout: Layout, amount_sign: int = 1) -> ParsedFile:
         raise FormatError(
             f"{len(errors)} row(s) couldn't be read ({shown}). Nothing was imported."
         )
-    return ParsedFile(rows=rows, pending=pending)
+    return ParsedFile(rows=rows, pending=pending, zero=zero)
 
 
 def _read_row(layout: Layout, index: dict, record: list[str], line: int, amount_sign: int):
@@ -247,17 +251,19 @@ def _row_amount(layout: Layout, cell, amount_sign: int) -> int:
         if not value:
             raise FormatError(f"no amount in {layout.amount}")
         return amount_sign * _parse_amount(value)
-    out, into = cell(layout.debit), cell(layout.credit)
+    out_cell, into_cell = cell(layout.debit), cell(layout.credit)
+    if not (out_cell or into_cell):
+        raise FormatError(f"no amount in {layout.debit} / {layout.credit}")
     # Some banks fill the unused column with 0.00 rather than leaving it empty.
-    out = out if out and _parse_amount(out) != 0 else ""
-    into = into if into and _parse_amount(into) != 0 else ""
+    out = out_cell if out_cell and _parse_amount(out_cell) != 0 else ""
+    into = into_cell if into_cell and _parse_amount(into_cell) != 0 else ""
     if out and into:
         raise FormatError(f"more than one amount in {layout.debit} / {layout.credit}")
     if out:
         return -abs(_parse_amount(out))
     if into:
         return abs(_parse_amount(into))
-    raise FormatError(f"no amount in {layout.debit} / {layout.credit}")
+    return 0  # a $0.00 row; the caller leaves it out
 
 
 # An amount cut at an unquoted thousands separator: "-$ 1" then "284.70".

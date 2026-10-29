@@ -45,6 +45,8 @@ class ImportSummary:
     rows_skipped: int
     # Not cleared yet, so left out; they'll import once the bank marks them cleared.
     rows_pending: int
+    # $0.00 rows, left out.
+    rows_zero: int
     uncategorized: int
     first_date: str
     last_date: str
@@ -264,6 +266,7 @@ def import_csv(
         rows_added=added,
         rows_skipped=len(rows) - added,
         rows_pending=parsed.pending,
+        rows_zero=parsed.zero,
         uncategorized=uncategorized,
         first_date=dates[0],
         last_date=dates[-1],

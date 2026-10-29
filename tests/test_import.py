@@ -40,15 +40,16 @@ class ImportTest(DbTestCase):
         with self.assertRaisesRegex(UserError, "still pending"):
             import_csv(self.conn, account, "citi.csv", text)
 
-    def test_summary_reports_pending_rows(self):
+    def test_summary_reports_pending_and_zero_rows(self):
         account = self.make_account("Citi")
         text = (
             CITI_HEADER
             + 'Pending,10/23/2026,"COFFEE",$ 4.50,\n'
             + 'Cleared,10/22/2026,"GROCERY",$ 40.00,\n'
+            + 'Cleared,10/21/2026,"MEMBERSHIP FEE",$ 0.00,\n'
         )
         summary = import_csv(self.conn, account, "citi.csv", text)
-        self.assertEqual((summary.rows_added, summary.rows_pending), (1, 1))
+        self.assertEqual((summary.rows_added, summary.rows_pending, summary.rows_zero), (1, 1, 1))
 
     def test_missing_account(self):
         with self.assertRaises(NotFound):

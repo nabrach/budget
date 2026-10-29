@@ -72,7 +72,7 @@ export function showTooltip(anchor, title, rows) {
   const t = tooltipEl();
   t.replaceChildren(
     el("div", { class: "tt-title" }, title),
-    rows.map((row) =>
+    ...rows.map((row) =>
       el(
         "div",
         { class: "tt-row" },
@@ -190,7 +190,10 @@ function yAxis(svg, width, scale, y) {
 // onSelect(month): called when a column is clicked or activated by keyboard.
 
 export function columnChart({ months, series, onSelect, ariaLabel }) {
+  // Bars stack only positive amounts; the numbers shown are the net total, so a
+  // category whose refunds outweigh its spending still counts, as in the plain view.
   const totals = months.map((m) => series.reduce((sum, ser) => sum + Math.max(0, ser.value(m)), 0));
+  const net = months.map((m) => series.reduce((sum, ser) => sum + ser.value(m), 0));
   const scale = niceScale(Math.max(...totals, 0));
   const max = Math.max(...totals);
   const lastWithData = totals.findLastIndex((t) => t > 0);
@@ -230,7 +233,7 @@ export function columnChart({ months, series, onSelect, ariaLabel }) {
 
       // Label the latest and the highest month only.
       if (totals[i] > 0 && (i === lastWithData || totals[i] === max)) {
-        group.append(s("text", { x: x + barWidth / 2, y: y(totals[i]) - 6, class: "value", "text-anchor": "middle" }, moneyWhole(totals[i])));
+        group.append(s("text", { x: x + barWidth / 2, y: y(totals[i]) - 6, class: "value", "text-anchor": "middle" }, moneyWhole(net[i])));
       }
       if (i % every === 0) {
         group.append(s("text", { x: x + barWidth / 2, y: PLOT.top + PLOT.height + 18, class: "tick", "text-anchor": "middle" }, monthTick(month, i, months[i - 1])));
@@ -238,7 +241,7 @@ export function columnChart({ months, series, onSelect, ariaLabel }) {
 
       // Hit target: the whole band, taller than the mark.
       const rows = [
-        { value: money(totals[i]), label: "spent" },
+        { value: money(net[i]), label: "spent" },
         ...(stacked
           ? series
               .map((ser) => ({ value: money(ser.value(month)), label: ser.label, color: ser.color, key: "rect", cents: ser.value(month) }))
@@ -249,7 +252,7 @@ export function columnChart({ months, series, onSelect, ariaLabel }) {
       const hit = s("rect", {
         x: PLOT.left + band * i, y: PLOT.top, width: band, height: PLOT.height,
         class: "hit", tabindex: 0, role: "button",
-        "aria-label": `${month.label}: ${money(totals[i])} spent. Show transactions.`,
+        "aria-label": `${month.label}: ${money(net[i])} spent. Show transactions.`,
       });
       const show = () => { group.classList.add("hover"); showTooltip(hit, month.label, rows); };
       const hide = () => { group.classList.remove("hover"); hideTooltip(); };
