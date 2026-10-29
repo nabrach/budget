@@ -1830,19 +1830,24 @@ function layoutsSection(layouts) {
 // ---- Dashboard -------------------------------------------------------------
 
 const DASH_PERIODS = [
+  ["last-1", "This month"],
+  ["last-3", "Last 3 months"],
   ["last-6", "Last 6 months"],
   ["last-12", "Last 12 months"],
   ["this-year", "This year"],
   ["all", "All time"],
+  ["custom", "Custom dates"],
 ];
 
-function dashboardRange(period, today = new Date()) {
+// [start, end] for the charts. "last-N" is N whole months ending with this one.
+function dashboardRange(view, today = new Date()) {
   const y = today.getFullYear();
   const m = today.getMonth();
   const end = isoDate(new Date(y, m + 1, 0));
-  if (period === "last-6") return [isoDate(new Date(y, m - 5, 1)), end];
-  if (period === "last-12") return [isoDate(new Date(y, m - 11, 1)), end];
-  if (period === "this-year") return [`${y}-01-01`, end];
+  const months = /^last-(\d+)$/.exec(view.period);
+  if (months) return [isoDate(new Date(y, m - Number(months[1]) + 1, 1)), end];
+  if (view.period === "this-year") return [`${y}-01-01`, end];
+  if (view.period === "custom") return [view.start, view.end];
   return ["", ""];
 }
 
@@ -1858,18 +1863,27 @@ const STATE_ORDER = { over: 0, warn: 1, pace: 2, ok: 3 };
 
 async function dashboardPage() {
   const params = hashParams();
+  const isDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value ?? "");
   const view = {
     period: DASH_PERIODS.some(([k]) => k === params.get("period")) ? params.get("period") : "last-12",
+    start: isDate(params.get("start")) ? params.get("start") : "",
+    end: isDate(params.get("end")) ? params.get("end") : "",
     split: params.get("split") === "1",
   };
+  // Custom dates without both ends fall back to the default range.
+  if (view.period === "custom" && !(view.start && view.end)) view.period = "last-12";
   const saveView = () => {
     const query = new URLSearchParams();
     if (view.period !== "last-12") query.set("period", view.period);
+    if (view.period === "custom") {
+      query.set("start", view.start);
+      query.set("end", view.end);
+    }
     if (view.split) query.set("split", "1");
     history.replaceState(null, "", `#/dashboard${query.toString() ? "?" + query : ""}`);
   };
 
-  const [range0Start, range0End] = dashboardRange(view.period);
+  const [range0Start, range0End] = dashboardRange(view);
   const [accounts, categories, first] = await Promise.all([
     api("GET", "/api/accounts"),
     api("GET", "/api/categories"),
@@ -1886,13 +1900,15 @@ async function dashboardPage() {
   const names = Object.fromEntries(categories.map((c) => [c.id, c.name]));
 
   const charts = h("div", { class: "dash-charts" });
+  let shownRange = first.range; // the dates the charts cover, as the server worked them out
   async function loadCharts(data) {
     charts.classList.add("loading");
     try {
       if (!data) {
-        const [start, end] = dashboardRange(view.period);
+        const [start, end] = dashboardRange(view);
         data = await api("GET", `/api/dashboard?start=${start}&end=${end}`);
       }
+      shownRange = data.range;
       charts.replaceChildren(...chartCards(data, names, view, () => { saveView(); loadCharts(data); }));
     } catch (error) {
       charts.replaceChildren(h("div", { class: "flash error", role: "alert" }, error.message));
@@ -1901,9 +1917,34 @@ async function dashboardPage() {
     }
   }
 
+  // Custom dates start from whatever range was showing, so picking one end is enough.
+  const startInput = h("input", { type: "date", "aria-label": "From", value: view.start, onchange: () => pickDates() });
+  const endInput = h("input", { type: "date", "aria-label": "To", value: view.end, onchange: () => pickDates() });
+  const dateRange = h("div", { class: "custom-dates", hidden: view.period !== "custom" }, startInput, h("span", { class: "muted" }, "to"), endInput);
+  function pickDates() {
+    if (!startInput.value || !endInput.value) return;
+    if (startInput.value > endInput.value) [startInput.value, endInput.value] = [endInput.value, startInput.value];
+    Object.assign(view, { start: startInput.value, end: endInput.value });
+    saveView();
+    loadCharts();
+  }
   const period = h(
     "select",
-    { "aria-label": "Date range for the charts", onchange: () => { view.period = period.value; saveView(); loadCharts(); } },
+    {
+      "aria-label": "Date range for the charts",
+      onchange: () => {
+        if (period.value === "custom") {
+          const [start, end] = [shownRange.start, shownRange.end];
+          startInput.value ||= start;
+          endInput.value ||= end;
+          Object.assign(view, { start: startInput.value, end: endInput.value });
+        }
+        view.period = period.value;
+        dateRange.hidden = view.period !== "custom";
+        saveView();
+        loadCharts();
+      },
+    },
     DASH_PERIODS.map(([value, label]) => h("option", { value, selected: value === view.period }, label)),
   );
 
@@ -1913,7 +1954,12 @@ async function dashboardPage() {
     h("h1", {}, "Dashboard"),
     thisMonthCard(first.budget),
     budgetCard(first.budget),
-    h("div", { class: "filters-row" }, h("label", { class: "field" }, h("span", {}, "Charts show"), period)),
+    h(
+      "div",
+      { class: "filters-row" },
+      h("label", { class: "field" }, h("span", {}, "Charts show"), period),
+      dateRange,
+    ),
     charts,
   );
   await loadCharts(first);

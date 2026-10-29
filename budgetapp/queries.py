@@ -266,8 +266,9 @@ def monthly_totals(conn, start: str, end: str, category_id: int | None = None):
         first.isoformat()[:7]: {
             "month": first.isoformat()[:7],
             "label": f"{first:%b %Y}",
-            "start": first.isoformat(),
-            "end": last.isoformat(),
+            # Clipped to the range, so a part month links to just the days shown.
+            "start": max(first.isoformat(), start),
+            "end": min(last.isoformat(), end),
             "spent_cents": 0,
             "income_cents": 0,
             "by_category": {},

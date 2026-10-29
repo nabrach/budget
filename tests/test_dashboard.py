@@ -97,6 +97,13 @@ class MonthlyTotalsTest(QueryTestCase):
             {str(self.category_id("Food")): 2000},  # per group: Groceries $15 + Restaurants $5
         )
 
+    def test_part_months_cover_only_the_days_in_range(self):
+        months = monthly_totals(self.conn, "2026-09-15", "2026-10-10")
+        self.assertEqual(
+            [(m["label"], m["start"], m["end"]) for m in months],
+            [("Sep 2026", "2026-09-15", "2026-09-30"), ("Oct 2026", "2026-10-01", "2026-10-10")],
+        )
+
     def test_category_rank_is_all_time_spending(self):
         names = {self.category_id(n): n for n in ("Entertainment", "Food")}
         self.assertEqual([names[i] for i in category_rank(self.conn)], ["Entertainment", "Food"])
