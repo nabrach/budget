@@ -2,6 +2,7 @@
 
 import sqlite3
 
+from . import transfers
 from .categorize import normalize, recategorize, suggest_pattern
 from .db import transaction
 from .errors import NotFound, UserError
@@ -81,6 +82,7 @@ def delete_account(conn, account_id):
     """Delete an account with all its imports and transactions."""
     _require_account(conn, account_id)
     with transaction(conn):
+        transfers.release(conn, [r[0] for r in conn.execute("SELECT id FROM transactions WHERE account_id = ?", (account_id,))])
         removed = conn.execute(
             "DELETE FROM transactions WHERE account_id = ?", (account_id,)
         ).rowcount
@@ -277,6 +279,13 @@ def delete_category(conn, category_id):
     return {"moved": moved, "rules_removed": rules_removed, "moved_to": None}
 
 
+def _require_unlinked(conn, transaction_id, doing):
+    linked = transfers.link_for(conn, transaction_id)
+    if linked:
+        other = linked["other"]
+        raise UserError(f"This is linked as a transfer with {other['account_name']}. Unlink it first to {doing}.")
+
+
 def _is_split(conn, transaction_id):
     return conn.execute("SELECT 1 FROM transaction_parts WHERE transaction_id = ? LIMIT 1", (transaction_id,)).fetchone()
 
@@ -295,6 +304,7 @@ def set_category(conn, transaction_id, category_id):
             raise NotFound("That transaction doesn't exist.")
         if _is_split(conn, transaction_id):
             raise UserError("This transaction is split. Change its parts instead.")
+        _require_unlinked(conn, transaction_id, "change its category")
         conn.execute(
             "UPDATE transactions SET category_id = ?, category_source = 'manual' WHERE id = ?",
             (category_id, transaction_id),
@@ -305,6 +315,55 @@ def set_category(conn, transaction_id, category_id):
         "category_id": category_id,
         "suggested_pattern": suggest_pattern(row["description"]) if offer_rule else None,
     }
+
+
+MAX_NOTE_LENGTH = 500
+
+
+def set_note(conn, transaction_id, note):
+    """Your own words about a transaction. Blank removes the note."""
+    note = " ".join(str(note or "").split())
+    if len(note) > MAX_NOTE_LENGTH:
+        raise UserError(f"Notes can be at most {MAX_NOTE_LENGTH} characters.")
+    with transaction(conn):
+        if not conn.execute("UPDATE transactions SET note = ? WHERE id = ?", (note or None, transaction_id)).rowcount:
+            raise NotFound("That transaction doesn't exist.")
+    return {"id": transaction_id, "note": note or None}
+
+
+MAX_DELETE = 5000
+
+
+def delete_transactions(conn, transaction_ids):
+    """Delete transactions you picked. Their split parts go too, and linked
+    transfers are unlinked (the other side gets its earlier category back).
+
+    Nothing remembers them: importing a file that has them adds them again.
+    """
+    if not isinstance(transaction_ids, list) or not transaction_ids:
+        raise UserError("Pick at least one transaction to delete.")
+    if len(transaction_ids) > MAX_DELETE:
+        raise UserError(f"You can delete at most {MAX_DELETE:,} transactions at once.")
+    ids = set()
+    for value in transaction_ids:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise UserError("Transaction ids must be numbers.")
+        ids.add(value)
+    marks = ",".join("?" * len(ids))
+    with transaction(conn):
+        found = [r[0] for r in conn.execute(f"SELECT id FROM transactions WHERE id IN ({marks})", list(ids))]
+        if len(found) != len(ids):
+            raise NotFound("Some of those transactions don't exist (they may already be deleted). Nothing was deleted.")
+        cents, count = conn.execute(
+            f"SELECT coalesce(sum(amount_cents), 0), count(*) FROM transactions WHERE id IN ({marks})", list(ids)
+        ).fetchone()
+        unlinked = conn.execute(
+            f"SELECT count(*) FROM transfer_links WHERE status = 'linked' AND (out_id IN ({marks}) OR in_id IN ({marks}))",
+            [*ids, *ids],
+        ).fetchone()[0]
+        transfers.release(conn, found)
+        conn.execute(f"DELETE FROM transactions WHERE id IN ({marks})", list(ids))
+    return {"deleted": count, "amount_cents": cents, "transfers_unlinked": unlinked}
 
 
 # ---- Splitting -------------------------------------------------------------------
@@ -332,6 +391,7 @@ def split_transaction(conn, transaction_id, parts):
     with at least two parts that add up exactly to the transaction's amount.
     person_id is optional (None = Household)."""
     txn = get_transaction(conn, transaction_id)
+    _require_unlinked(conn, transaction_id, "split it")
     if not isinstance(parts, list) or len(parts) < 2:
         raise UserError("A split needs at least two parts.")
     cleaned = []

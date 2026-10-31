@@ -55,6 +55,29 @@ statements: `.gitignore` blocks every CSV file and the `data/` folder.
   them to a person. Budgets can be per category for everyone or for one person
   (e.g. Personal: $200 for one person, $150 for another). The review list also
   shows transactions in per-person budgets that don't have a person yet.
+- **Transfers**: paying a card from checking shows up twice, out of one
+  account and into the other. The app suggests pairs (same amount going
+  opposite ways, at most 5 days apart, at least one already looking like a
+  transfer) on the Import page, and you Link them or say Not a match. Linked
+  rows show "⇄ Account" and count as neither spending nor income; Unlink puts
+  their earlier categories back. "Link…" on any row pairs two yourself (within
+  30 days). Transfers with no match in your other accounts are flagged once
+  those accounts' imports cover the dates, unless the other side is an account
+  you don't import. In Settings you can let clear matches link on import.
+- **Amazon orders**: Amazon charges only say "AMAZON MKTPL". To catch up,
+  request your data from Amazon (Your Orders) and import its
+  `Order History.csv` with "Import Amazon orders". Each Amazon charge is
+  matched to the shipment (or whole order) it paid for, and charges still
+  Uncategorized are listed with their items: pick a category per item (guessed
+  from the same product before, or Amazon's department) and Apply sets one
+  category or splits the charge. Matched charges show their items, and search
+  finds item names.
+- **Notes**: add a note to any transaction (under its description). Search
+  finds notes too.
+- **Deleting**: tick transactions on the Transactions page (or "select all
+  shown" after filtering) and Delete selected. Split parts go with them and
+  linked transfers are unlinked. Deleted rows aren't remembered: importing a
+  file that has them adds them back.
 - **Undo** any import from the Import page's history.
 - **Transactions** can be sorted by any column, filtered by dates, account,
   category and text, and totalled by week, month, year, category or merchant.
@@ -63,15 +86,17 @@ statements: `.gitignore` blocks every CSV file and the `data/` folder.
   refunds.
 - **Settings** holds people, monthly budgets (per category and person, plus
   an optional overall limit and the warning level), rules, categories, how the
-  bank's own categories map to yours, accounts and saved column layouts.
+  bank's own categories map to yours, transfer linking, accounts and saved
+  column layouts.
 - **Dashboard** shows this month's spending against your budgets, warnings
   (at your warning level, past 100%, or when spending is ahead of the month's
   pace) and charts of monthly spending, spending by category and money in vs
   spent. Click any bar or budget to see its transactions. The same warnings
   appear after each import.
-- **Ask** answers 9 fill-in-the-blank questions from your data (no AI), such
+- **Ask** answers 10 fill-in-the-blank questions from your data (no AI), such
   as "How much did I spend on Dining last month?", "What were my top 5
-  merchants this year?" or "Am I over budget this month?". Answers link to
+  merchants this year?", "How much did I pay toward my card this year?" or
+  "Am I over budget this month?". Answers link to
   the matching transactions.
 
 ## CSV files

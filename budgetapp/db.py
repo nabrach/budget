@@ -2,6 +2,7 @@
 
 import sqlite3
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 
 from . import categorize
@@ -417,8 +418,125 @@ def _migrate_v7(conn):
     _run_script(conn, SCHEMA_V7)
 
 
+# ---- v8: transfer links ----------------------------------------------------------------
+
+SCHEMA_V8 = """
+-- The two sides of a transfer between your own accounts (money out of one,
+-- into another), linked, or marked as not a match so they aren't suggested
+-- again. Suggestions themselves aren't stored: they're worked out when needed.
+CREATE TABLE transfer_links (
+    id INTEGER PRIMARY KEY,
+    out_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+    in_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('linked', 'rejected')),
+    -- suggestion = you confirmed or turned down a suggestion, auto = linked on
+    -- import, manual = you paired them with "Link as transfer".
+    origin TEXT NOT NULL CHECK (origin IN ('suggestion', 'auto', 'manual')),
+    -- Each side's category before linking, put back when unlinked.
+    out_prev_category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+    out_prev_source TEXT,
+    in_prev_category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+    in_prev_source TEXT,
+    decided_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (out_id, in_id)
+);
+CREATE UNIQUE INDEX transfer_links_out ON transfer_links (out_id) WHERE status = 'linked';
+CREATE UNIQUE INDEX transfer_links_in ON transfer_links (in_id) WHERE status = 'linked';
+CREATE INDEX transfer_links_in_any ON transfer_links (in_id);
+
+-- Transfers whose other side is in an account you don't import.
+CREATE TABLE transfer_untracked (
+    transaction_id INTEGER PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE
+);
+
+-- Descriptions never flagged as a transfer with no match, e.g. a monthly
+-- transfer to a savings account you don't import. Matched like rules.
+CREATE TABLE transfer_ignores (
+    id INTEGER PRIMARY KEY,
+    pattern TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX transactions_amount ON transactions (amount_cents);
+INSERT INTO settings (key, value) VALUES ('auto_link_transfers', '0')
+"""
+
+
+def _migrate_v8(conn):
+    _run_script(conn, SCHEMA_V8)
+
+
+# ---- v9: notes and Amazon orders ------------------------------------------------------
+
+SCHEMA_V9 = """
+-- Your own words about a transaction.
+ALTER TABLE transactions ADD COLUMN note TEXT;
+
+-- Items from Amazon's order history export (one row per item), used to show
+-- what an Amazon charge bought and to split it. A newer file replaces the rows
+-- of every order it contains.
+CREATE TABLE amazon_items (
+    id INTEGER PRIMARY KEY,
+    order_id TEXT NOT NULL,
+    order_date TEXT NOT NULL,
+    ship_date TEXT,
+    asin TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    department TEXT,
+    quantity INTEGER NOT NULL DEFAULT 1,
+    total_cents INTEGER NOT NULL
+);
+CREATE INDEX amazon_items_order ON amazon_items (order_id, ship_date);
+
+-- Which order (or one shipment of it, when ship_date is set) a charge paid for.
+-- chosen = 1 when you picked it yourself.
+CREATE TABLE amazon_matches (
+    transaction_id INTEGER PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE,
+    order_id TEXT NOT NULL,
+    ship_date TEXT,
+    chosen INTEGER NOT NULL DEFAULT 0
+);
+
+-- The category (and person) you last gave each product, for guessing next time.
+CREATE TABLE amazon_products (
+    asin TEXT PRIMARY KEY,
+    category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+    person_id INTEGER REFERENCES people(id) ON DELETE SET NULL
+);
+
+-- Amazon's Department for an item -> your category, as a fallback guess.
+CREATE TABLE amazon_departments (
+    department TEXT PRIMARY KEY COLLATE NOCASE,
+    category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE
+)
+"""
+
+# Starting Department guesses: (department, group, subcategory or None).
+V9_DEPARTMENTS = [
+    ("Grocery", "Food", "Groceries"),
+    ("Health and Beauty", "Food", "Groceries"),
+    ("Paper Gift Certificate", "Gifts", None),
+    ("Ecard Gift Certificate", "Gifts", None),
+    ("Plastic Gift Certificate", "Gifts", None),
+]
+
+
+def _migrate_v9(conn):
+    _run_script(conn, SCHEMA_V9)
+    for department, group, sub in V9_DEPARTMENTS:
+        row = conn.execute(
+            """SELECT c.id FROM categories c LEFT JOIN categories g ON g.id = c.parent_id
+               WHERE c.kind = 'expense' AND (
+                   (? IS NULL AND c.parent_id IS NULL AND c.name = ? COLLATE NOCASE)
+                   OR (g.name = ? COLLATE NOCASE AND c.name = ? COLLATE NOCASE))""",
+            (sub, group, group, sub),
+        ).fetchone()
+        if row:  # only if you still have that category
+            conn.execute("INSERT INTO amazon_departments (department, category_id) VALUES (?, ?)", (department, row[0]))
+
+
 # Append new migrations here; never edit one that has shipped.
-MIGRATIONS = [_migrate_v1, _migrate_v2, _migrate_v3, _migrate_v4, _migrate_v5, _migrate_v6, _migrate_v7]
+MIGRATIONS = [_migrate_v1, _migrate_v2, _migrate_v3, _migrate_v4, _migrate_v5, _migrate_v6, _migrate_v7, _migrate_v8, _migrate_v9]
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -426,7 +544,18 @@ def connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path, isolation_level=None, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # word_match(pattern, text): whole-word match like rules use, for SQL.
+    conn.create_function("word_match", 2, _word_match, deterministic=True)
     return conn
+
+
+@lru_cache(maxsize=256)
+def _compiled_pattern(pattern):
+    return categorize.word_pattern(pattern)
+
+
+def _word_match(pattern, text):
+    return int(bool(_compiled_pattern(pattern).search(categorize.normalize(text or ""))))
 
 
 def init(path: Path) -> None:

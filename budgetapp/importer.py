@@ -14,6 +14,7 @@ import re
 from collections import defaultdict
 from dataclasses import asdict, dataclass, replace
 
+from . import transfers
 from .categorize import Categorizer, normalize
 from .db import transaction
 from .errors import NotFound, UserError
@@ -48,6 +49,9 @@ class ImportSummary:
     # $0.00 rows, left out.
     rows_zero: int
     uncategorized: int
+    # Transfers linked automatically, and possible ones waiting for you.
+    transfers_linked: int
+    transfer_suggestions: int
     first_date: str
     last_date: str
 
@@ -257,6 +261,8 @@ def import_csv(
             (signature, sign, account_id),
         )
 
+    transfers_linked = transfers.auto_link(conn)
+    new_ids = [r[0] for r in conn.execute("SELECT id FROM transactions WHERE batch_id = ?", (batch_id,))]
     dates = sorted(row.date for row in rows)
     return ImportSummary(
         batch_id=batch_id,
@@ -267,6 +273,8 @@ def import_csv(
         rows_skipped=len(rows) - added,
         rows_pending=parsed.pending,
         rows_zero=parsed.zero,
+        transfers_linked=transfers_linked,
+        transfer_suggestions=transfers.suggestions_for(conn, new_ids),
         uncategorized=uncategorized,
         first_date=dates[0],
         last_date=dates[-1],
@@ -278,6 +286,7 @@ def undo_import(conn, batch_id: int) -> int:
     with transaction(conn):
         if not conn.execute("SELECT 1 FROM import_batches WHERE id = ?", (batch_id,)).fetchone():
             raise NotFound("That import doesn't exist (it may already be undone).")
+        transfers.release(conn, [r[0] for r in conn.execute("SELECT id FROM transactions WHERE batch_id = ?", (batch_id,))])
         removed = conn.execute("DELETE FROM transactions WHERE batch_id = ?", (batch_id,)).rowcount
         conn.execute("DELETE FROM import_batches WHERE id = ?", (batch_id,))
     return removed

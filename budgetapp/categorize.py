@@ -20,7 +20,7 @@ def normalize(text: str) -> str:
     return " ".join(text.upper().split())
 
 
-def _word_pattern(pattern: str) -> re.Pattern:
+def word_pattern(pattern: str) -> re.Pattern:
     # Whole-word match, so "UBER" doesn't match "TUBERS".
     return re.compile(r"(?<![A-Z0-9])" + re.escape(pattern) + r"(?![A-Z0-9])")
 
@@ -53,9 +53,9 @@ class Categorizer:
         rules = conn.execute(
             "SELECT pattern, category_id, person_id FROM rules ORDER BY length(pattern) DESC, id DESC"
         ).fetchall()
-        self.rules = [(_word_pattern(r["pattern"]), r["category_id"]) for r in rules]
+        self.rules = [(word_pattern(r["pattern"]), r["category_id"]) for r in rules]
         # Only rules that name a person decide the person.
-        self.person_rules = [(_word_pattern(r["pattern"]), r["person_id"]) for r in rules if r["person_id"]]
+        self.person_rules = [(word_pattern(r["pattern"]), r["person_id"]) for r in rules if r["person_id"]]
         self.bank_categories = {
             row["bank_category"].lower(): row["category_id"]
             for row in conn.execute("SELECT bank_category, category_id FROM bank_categories")

@@ -123,3 +123,76 @@ class ServerTest(DbTestCase):
             self.assertIn(b"<html", res.read())
         status, _ = self.request("GET", "/static/../budgetapp/db.py")
         self.assertEqual(status, 404)
+
+    def test_transfer_flow(self):
+        from tests.test_transfers import CARD, CHECKING
+
+        ids = {}
+        for name, text in (("Checking", CHECKING), ("Card", CARD)):
+            _, account = self.request("POST", "/api/accounts", json_body={"name": name})
+            status, summary = self.request(
+                "POST", f"/api/accounts/{account['id']}/import?amount_sign=1", body=text.encode(),
+                headers={"Content-Type": "text/csv"},
+            )
+            self.assertEqual(status, 201)
+            ids[name] = account["id"]
+        self.assertEqual(summary["transfer_suggestions"], 2)
+
+        status, review = self.request("GET", "/api/transfers")
+        self.assertEqual((status, len(review["suggestions"])), (200, 2))
+        first, second = review["suggestions"]
+        status, linked = self.request(
+            "POST", "/api/transfers/link", json_body={"first_id": first["out"]["id"], "second_id": first["in"]["id"]}
+        )
+        self.assertEqual((status, linked["other"]["account_name"]), (200, "Card"))
+        status, _ = self.request(
+            "POST", "/api/transfers/reject", json_body={"first_id": second["out"]["id"], "second_id": second["in"]["id"]}
+        )
+        self.assertEqual(status, 200)
+
+        status, found = self.request("GET", f"/api/transactions?account_id={ids['Checking']}")
+        tags = {r["id"]: r["transfer"] for r in found["rows"]}
+        self.assertEqual(tags[first["out"]["id"]]["status"], "linked")
+
+        status, _ = self.request("DELETE", f"/api/transactions/{first['out']['id']}/transfer")
+        self.assertEqual(status, 200)
+        status, candidates = self.request("GET", f"/api/transactions/{first['out']['id']}/transfer-candidates")
+        self.assertEqual((status, len(candidates["candidates"])), (200, 1))
+
+        status, settings = self.request("PUT", "/api/transfer-settings", json_body={"auto_link": True})
+        self.assertEqual((status, settings["auto_link"], settings["decided"]), (200, True, 2))
+        status, ignore = self.request("POST", "/api/transfer-ignores", json_body={"pattern": "online transfer"})
+        self.assertEqual(status, 201)
+        status, _ = self.request("DELETE", f"/api/transfer-ignores/{ignore['id']}")
+        self.assertEqual(status, 200)
+        status, error = self.request("POST", "/api/transfers/link", json_body={"first_id": 1, "second_id": 1})
+        self.assertEqual((status, error["error"]), (400, "Pick two different transactions."))
+
+    def test_amazon_and_notes(self):
+        from tests.test_amazon import CARD, ORDERS
+
+        _, account = self.request("POST", "/api/accounts", json_body={"name": "Prime Card"})
+        self.request("POST", f"/api/accounts/{account['id']}/import?amount_sign=1", body=CARD.encode(), headers={"Content-Type": "text/csv"})
+        status, summary = self.request("POST", "/api/amazon/import", body=ORDERS.encode(), headers={"Content-Type": "text/csv"})
+        self.assertEqual((status, summary["matched"]), (201, 3))
+        status, review = self.request("GET", "/api/amazon")
+        self.assertEqual((status, len(review["charges"]), review["status"]["orders"]), (200, 3, 3))
+        entry = review["charges"][-1]
+        status, detail = self.request("GET", f"/api/amazon/charges/{entry['charge']['id']}")
+        self.assertEqual((status, detail["review"]), (200, True))
+        _, categories = self.request("GET", "/api/categories")
+        gifts = next(c["id"] for c in categories if c["name"] == "Gifts")
+        status, result = self.request(
+            "POST", f"/api/amazon/charges/{entry['charge']['id']}/apply",
+            json_body={"items": [{"item_id": i["id"], "category_id": gifts} for i in entry["order"]["items"]]},
+        )
+        self.assertEqual((status, result["split"]), (200, False))
+        status, _ = self.request("PUT", "/api/amazon/departments", json_body={"department": "Toy", "category_id": gifts})
+        self.assertEqual(status, 200)
+        status, found = self.request("GET", "/api/transactions?q=toothpaste")
+        self.assertEqual((status, found["count"]), (200, 2))
+        self.assertTrue(all(r["amazon"]["items"] for r in found["rows"]))
+        status, note = self.request("PATCH", f"/api/transactions/{entry['charge']['id']}", json_body={"note": "for the party"})
+        self.assertEqual((status, note["note"]), (200, "for the party"))
+        status, error = self.request("POST", "/api/amazon/import", body=b"Date,Description,Amount\n", headers={"Content-Type": "text/csv"})
+        self.assertEqual(status, 400)

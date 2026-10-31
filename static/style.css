@@ -456,3 +456,74 @@ tr.group-row td input.group-input { font-weight: 600; }
 select.person-select { min-width: 110px; }
 .table-wrap td select { max-width: 210px; }
 .table-wrap td select.person-select { max-width: 130px; min-width: 0; }
+
+/* Transfers */
+.transfer-list { display: grid; gap: 8px; }
+.transfer-list > .card + .card { margin-top: 0; }
+.transfer-pair { display: grid; grid-template-columns: 1fr auto 1fr auto; gap: 12px 16px; align-items: center; padding: 12px 16px; }
+.transfer-side { min-width: 0; display: grid; gap: 2px; }
+.transfer-meta { display: flex; gap: 8px; font-size: 13px; }
+.transfer-desc { overflow-wrap: anywhere; }
+.transfer-side .amount { font-variant-numeric: tabular-nums; font-weight: 600; }
+.transfer-arrow { color: var(--muted); font-size: 18px; }
+.transfer-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+.transfer-option { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--border); }
+.transfer-option:last-of-type { border-bottom: 1px solid var(--border); }
+button.tag { cursor: pointer; font: inherit; font-size: 12px; line-height: 1.6; }
+button.tag:hover { border-color: var(--accent); color: var(--text); }
+.tag.suggest { border-style: dashed; }
+h3 { font-size: 15px; margin: 20px 0 8px; }
+@media (max-width: 720px) {
+  .transfer-pair { grid-template-columns: 1fr; }
+  .transfer-arrow { display: none; }
+  .transfer-actions { justify-content: flex-start; }
+}
+.unmatched-group { padding: 0; }
+.unmatched-group > summary { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 16px; cursor: pointer; }
+.unmatched-name { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; min-width: 0; overflow-wrap: anywhere; }
+.unmatched-group .table-wrap { margin: 0; border: none; border-top: 1px solid var(--border); border-radius: 0; }
+
+/* Selecting and deleting transactions */
+th.select, td.select { width: 28px; padding-right: 0; }
+td.select input, th.select input { width: 16px; height: 16px; cursor: pointer; margin: 0; }
+.selection-bar {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+  margin: 12px 0 0; padding: 10px 16px;
+  background: var(--surface); border: 1px solid var(--accent); border-radius: 8px;
+}
+.selection-bar > span { margin-right: auto; }
+.delete-list { margin: 0 0 12px; padding-left: 20px; }
+td.row-actions { width: 1%; }
+td.row-actions button { display: block; width: 100%; margin: 2px 0; }
+.txn-table th, .txn-table td { padding: 8px; }
+.txn-table td select { max-width: 190px; }
+.nowrap { white-space: nowrap; }
+
+/* Amazon orders */
+.amazon-card { display: grid; gap: 8px; padding: 12px 16px; }
+.amazon-charge { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; overflow-wrap: anywhere; }
+.amazon-charge .amount { font-weight: 600; white-space: nowrap; }
+.amazon-card > button.link { justify-self: start; }
+.amazon-items { display: grid; border: 1px solid var(--border); border-radius: 8px; }
+.amazon-item { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 10px; }
+.amazon-item + .amazon-item { border-top: 1px solid var(--border); }
+.amazon-item .item-name {
+  flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.amazon-item .item-price { width: 80px; text-align: right; font-variant-numeric: tabular-nums; }
+.amazon-item select { width: 220px; max-width: 100%; }
+.amazon-item select.person-select { width: 130px; }
+.item-list { margin: 6px 0 0; padding-left: 18px; }
+.item-list li + li { margin-top: 2px; }
+
+/* Notes */
+.note { margin-top: 2px; }
+.note button { border: none; background: none; padding: 0; font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
+.note-text { color: var(--ink-secondary); font-style: italic; }
+.note-text:hover { text-decoration: underline; }
+.note-add { color: var(--muted); opacity: 0; }
+tr:hover .note-add, .note-add:focus-visible { opacity: 1; }
+.note input { width: 100%; font-size: 13px; padding: 3px 6px; }
+.tag { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }

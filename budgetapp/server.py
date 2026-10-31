@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import ask, budgets, db, ledger, queries
+from . import amazon, ask, budgets, db, ledger, queries, transfers
 from .config import ROOT, Config
 from .errors import NotFound, UserError
 from .importer import NeedsInput, delete_layout, import_csv, list_layouts, save_layout, undo_import
@@ -140,6 +140,7 @@ def _filter(req) -> queries.Filter:
         text=req.query.get("q") or None,
         person=_person_query(req.query.get("person")),
         needs_review=req.query.get("needs_review") == "1",
+        no_match=req.query.get("no_match") == "1",
     )
 
 
@@ -162,7 +163,93 @@ def get_transactions(req):
         # How the same store was categorized before, to make review quick.
         for row in result["rows"]:
             row["recent"] = ledger.recent_choices(req.conn, row["description"], row["id"])
+    transfers.annotate(req.conn, result["rows"])
+    amazon.for_transactions(req.conn, result["rows"])
     return 200, result
+
+
+# ---- Amazon orders ----
+
+def post_amazon_import(req):
+    try:
+        text = req.body.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise UserError("The file isn't a text CSV (it couldn't be read as UTF-8).") from None
+    return 201, amazon.import_orders(req.conn, text)
+
+
+def get_amazon(req):
+    return 200, {**amazon.review(req.conn), "status": amazon.status(req.conn)}
+
+
+def get_amazon_charge(req, transaction_id):
+    return 200, amazon.details(req.conn, int(transaction_id))
+
+
+def put_amazon_choice(req, transaction_id):
+    data = req.json()
+    return 200, amazon.choose(req.conn, int(transaction_id), data.get("order_id"), data.get("ship_date"))
+
+
+def post_amazon_apply(req, transaction_id):
+    return 200, amazon.apply(req.conn, int(transaction_id), req.json().get("items"))
+
+
+def get_amazon_departments(req):
+    return 200, amazon.departments(req.conn)
+
+
+def put_amazon_department(req):
+    data = req.json()
+    return 200, amazon.set_department(req.conn, data.get("department"), _optional_id(data, "category_id"))
+
+
+# ---- Transfers ----
+
+def get_transfers(req):
+    return 200, transfers.review(req.conn)
+
+
+def _pair_ids(data):
+    return _int(data.get("first_id"), "first_id"), _int(data.get("second_id"), "second_id")
+
+
+def post_transfer_link(req):
+    data = req.json()
+    return 200, transfers.link(req.conn, *_pair_ids(data), origin=data.get("origin", "suggestion"))
+
+
+def post_transfer_reject(req):
+    return 200, transfers.reject(req.conn, *_pair_ids(req.json()))
+
+
+def delete_transfer(req, transaction_id):
+    return 200, transfers.unlink(req.conn, int(transaction_id))
+
+
+def get_transfer_candidates(req, transaction_id):
+    return 200, transfers.candidates(req.conn, int(transaction_id))
+
+
+def post_untracked(req, transaction_id):
+    return 200, transfers.untrack(req.conn, int(transaction_id))
+
+
+def get_transfer_settings(req):
+    return 200, transfers.get_settings(req.conn)
+
+
+def put_transfer_settings(req):
+    return 200, transfers.set_auto_link(req.conn, req.json().get("auto_link"))
+
+
+def post_transfer_ignore(req):
+    return 201, transfers.add_ignore(req.conn, req.json().get("pattern"))
+
+
+def delete_transfer_ignore(req, ignore_id):
+    transfers.delete_ignore(req.conn, int(ignore_id))
+    return 200, {}
 
 
 def get_transaction(req, transaction_id):
@@ -197,10 +284,20 @@ def _optional_id(data, name):
 
 def patch_transaction(req, transaction_id):
     data = req.json()
+    if "note" in data:
+        return 200, ledger.set_note(req.conn, int(transaction_id), data.get("note"))
     if "person_id" in data:
         return 200, ledger.set_person(req.conn, int(transaction_id), _optional_id(data, "person_id"))
     category_id = _int(data.get("category_id"), "category_id")
     return 200, ledger.set_category(req.conn, int(transaction_id), category_id)
+
+
+def delete_transaction(req, transaction_id):
+    return 200, ledger.delete_transactions(req.conn, [int(transaction_id)])
+
+
+def post_delete_transactions(req):
+    return 200, ledger.delete_transactions(req.conn, req.json().get("ids"))
 
 
 def post_rule(req):
@@ -357,9 +454,28 @@ ROUTES = [
     ("GET", r"/api/totals", get_totals),
     ("GET", r"/api/transactions/(\d+)", get_transaction),
     ("PATCH", r"/api/transactions/(\d+)", patch_transaction),
+    ("DELETE", r"/api/transactions/(\d+)", delete_transaction),
+    ("POST", r"/api/transactions/delete", post_delete_transactions),
     ("PUT", r"/api/transactions/(\d+)/split", put_split),
     ("DELETE", r"/api/transactions/(\d+)/split", delete_split),
     ("PATCH", r"/api/parts/(\d+)", patch_part),
+    ("GET", r"/api/transfers", get_transfers),
+    ("POST", r"/api/amazon/import", post_amazon_import),
+    ("GET", r"/api/amazon", get_amazon),
+    ("GET", r"/api/amazon/departments", get_amazon_departments),
+    ("PUT", r"/api/amazon/departments", put_amazon_department),
+    ("GET", r"/api/amazon/charges/(\d+)", get_amazon_charge),
+    ("PUT", r"/api/amazon/charges/(\d+)/order", put_amazon_choice),
+    ("POST", r"/api/amazon/charges/(\d+)/apply", post_amazon_apply),
+    ("POST", r"/api/transfers/link", post_transfer_link),
+    ("POST", r"/api/transfers/reject", post_transfer_reject),
+    ("DELETE", r"/api/transactions/(\d+)/transfer", delete_transfer),
+    ("GET", r"/api/transactions/(\d+)/transfer-candidates", get_transfer_candidates),
+    ("POST", r"/api/transactions/(\d+)/untracked", post_untracked),
+    ("GET", r"/api/transfer-settings", get_transfer_settings),
+    ("PUT", r"/api/transfer-settings", put_transfer_settings),
+    ("POST", r"/api/transfer-ignores", post_transfer_ignore),
+    ("DELETE", r"/api/transfer-ignores/(\d+)", delete_transfer_ignore),
     ("GET", r"/api/people", get_people),
     ("POST", r"/api/people", post_person),
     ("PATCH", r"/api/people/(\d+)", patch_person),
@@ -416,7 +532,8 @@ def make_handler(db_path: Path):
                 if match and route_method == method:
                     break
             else:
-                return self._send_json(404, {"error": "Not found."})
+                # Usually the page was updated but the server is still running old code.
+                return self._send_json(404, {"error": "The app doesn't know that request. If you just updated it, restart the app (stop it and run python3 app.py again)."})
 
             length = int(self.headers.get("Content-Length") or 0)
             if length > MAX_BODY_BYTES:

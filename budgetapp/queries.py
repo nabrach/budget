@@ -37,6 +37,9 @@ GROUPS = ("week", "month", "year", "category", "subcategory", "merchant", "perso
 
 HOUSEHOLD = "household"  # the person filter value for shared (no person)
 
+# How many days apart the two sides of a transfer can post (see transfers.py).
+MATCH_DAYS = 5
+
 _FROM = """FROM entries t
            JOIN accounts a ON a.id = t.account_id
            JOIN categories c ON c.id = t.category_id
@@ -50,6 +53,28 @@ _NEEDS_REVIEW = """(c.kind = 'uncategorized' OR (t.person_id IS NULL AND EXISTS 
       AND (b.category_id = t.category_id OR b.category_id = c.parent_id))))"""
 
 
+_LINKED = "EXISTS (SELECT 1 FROM transfer_links l WHERE l.status = 'linked' AND {id} IN (l.out_id, l.in_id))"
+_SPLIT = "EXISTS (SELECT 1 FROM transaction_parts p WHERE p.transaction_id = {id})"
+
+# Transfers with nothing to pair with: not linked, no possible match, not
+# dismissed or ignored, and only once another account's imports cover the
+# date (plus MATCH_DAYS), so a file you haven't imported yet isn't flagged.
+_NO_MATCH = f"""(c.kind = 'transfer' AND t.part_id IS NULL
+    AND NOT {_LINKED.format(id="t.transaction_id")}
+    AND NOT EXISTS (SELECT 1 FROM transfer_untracked u WHERE u.transaction_id = t.transaction_id)
+    AND NOT EXISTS (SELECT 1 FROM transfer_ignores ig WHERE word_match(ig.pattern, t.description))
+    AND EXISTS (SELECT 1 FROM transactions o WHERE o.account_id != t.account_id GROUP BY o.account_id
+                HAVING min(o.date) <= t.date AND max(o.date) >= date(t.date, '+{MATCH_DAYS} days'))
+    AND NOT EXISTS (
+        SELECT 1 FROM transactions o
+        WHERE o.amount_cents = -t.amount_cents AND o.account_id != t.account_id
+          AND abs(julianday(o.date) - julianday(t.date)) <= {MATCH_DAYS}
+          AND NOT {_SPLIT.format(id="o.id")} AND NOT {_LINKED.format(id="o.id")}
+          AND NOT EXISTS (SELECT 1 FROM transfer_links r WHERE r.status = 'rejected'
+                          AND ((r.out_id = o.id AND r.in_id = t.transaction_id)
+                            OR (r.in_id = o.id AND r.out_id = t.transaction_id)))))"""
+
+
 @dataclass(frozen=True)
 class Filter:
     start: str | None = None  # yyyy-mm-dd, inclusive
@@ -60,6 +85,7 @@ class Filter:
     text: str | None = None  # matched anywhere in the description, any case
     person: int | str | None = None  # a person's id, or HOUSEHOLD for shared
     needs_review: bool = False
+    no_match: bool = False  # transfers with no other side found
 
     def __post_init__(self):
         for name in ("start", "end"):
@@ -93,9 +119,14 @@ class Filter:
             clauses.append("t.account_id = ?")
             params.append(self.account_id)
         if self.text and self.text.strip():
+            # Also finds your notes and the items of matched Amazon orders.
             escaped = self.text.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            clauses.append("t.description LIKE ? ESCAPE '\\'")
-            params.append(f"%{escaped}%")
+            clauses.append("""(t.description LIKE ? ESCAPE '\\'
+                OR EXISTS (SELECT 1 FROM transactions n WHERE n.id = t.transaction_id AND n.note LIKE ? ESCAPE '\\')
+                OR EXISTS (SELECT 1 FROM amazon_matches m JOIN amazon_items i ON i.order_id = m.order_id
+                           AND (m.ship_date IS NULL OR i.ship_date = m.ship_date)
+                           WHERE m.transaction_id = t.transaction_id AND i.product_name LIKE ? ESCAPE '\\'))""")
+            params += [f"%{escaped}%"] * 3
         if self.person == HOUSEHOLD:
             clauses.append("t.person_id IS NULL")
         elif self.person is not None:
@@ -103,6 +134,8 @@ class Filter:
             params.append(self.person)
         if self.needs_review:
             clauses.append(_NEEDS_REVIEW)
+        if self.no_match:
+            clauses.append(_NO_MATCH)
         return ("WHERE " + " AND ".join(clauses) if clauses else ""), params
 
 
@@ -137,6 +170,7 @@ def list_transactions(conn, flt: Filter = Filter(), sort="date", direction="desc
         f"""SELECT t.transaction_id AS id, t.part_id, t.date, t.description, t.amount_cents,
                    t.category_id, t.category_source, t.bank_category, a.name AS account_name,
                    t.person_id, pe.name AS person_name,
+                   (SELECT note FROM transactions n WHERE n.id = t.transaction_id) AS note,
                    {_FULL_NAME} AS category_name, c.kind AS category_kind,
                    (SELECT count(*) FROM transaction_parts p WHERE p.transaction_id = t.transaction_id) AS parts_count,
                    (SELECT count(*) FROM transaction_parts p

@@ -187,9 +187,63 @@ function newCategoryDialog(categories, parentId = null) {
 // `sorting` is optional: { sort, dir, onSort(column) } makes headers clickable.
 // `showRecent` adds how the same store was categorized before (rows need `recent`).
 // `people` adds a Person column (Household or a person) when there are any.
-function transactionTable(transactions, categories, { showAccount = true, sorting = null, showRecent = false, people = [] } = {}) {
+// A transaction's note, under its description: click to add or edit.
+function noteEditor(txn) {
+  if (txn.part_id != null && txn.part_number > 1) return null; // once per split transaction
+  const wrap = h("div", { class: "note" });
+  const show = () => {
+    wrap.replaceChildren(
+      txn.note
+        ? h("button", { type: "button", class: "note-text", title: "Edit note" }, txn.note)
+        : h("button", { type: "button", class: "note-add", title: "Add a note" }, "+ note"),
+    );
+    wrap.firstChild.addEventListener("click", edit);
+  };
+  const edit = () => {
+    const input = h("input", { type: "text", maxlength: 500, value: txn.note ?? "", "aria-label": `Note for ${txn.description}`, placeholder: "Note" });
+    let done = false;
+    const save = async () => {
+      if (done) return;
+      done = true;
+      try {
+        const result = await api("PATCH", `/api/transactions/${txn.id}`, { note: input.value });
+        txn.note = result.note;
+      } catch (e) {
+        setFlash("error", e.message);
+        await render();
+        return;
+      }
+      show();
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") save();
+      if (e.key === "Escape") { done = true; show(); }
+    });
+    input.addEventListener("blur", save);
+    wrap.replaceChildren(input);
+    input.focus();
+  };
+  show();
+  return wrap;
+}
+
+// selection: { selected: Set of transaction ids, onChange() } adds checkboxes.
+function transactionTable(transactions, categories, { showAccount = true, sorting = null, showRecent = false, people = [], selection = null } = {}) {
   const showPerson = people.length > 0;
-  const columns = (showAccount ? 6 : 5) + (showPerson ? 1 : 0);
+  const columns = (showAccount ? 6 : 5) + (showPerson ? 1 : 0) + (selection ? 1 : 0);
+  const ids = [...new Set(transactions.map((t) => t.id))];
+  const allBox = selection
+    ? h("input", {
+        type: "checkbox",
+        class: "select-all",
+        "aria-label": "Select all shown",
+        title: "Select all shown",
+        onchange: (event) => {
+          for (const id of ids) event.target.checked ? selection.selected.add(id) : selection.selected.delete(id);
+          selection.onChange();
+        },
+      })
+    : null;
   const header = (column, label, attrs = {}) => {
     if (!sorting) return h("th", attrs, label);
     const active = sorting.sort === column;
@@ -202,6 +256,7 @@ function transactionTable(transactions, categories, { showAccount = true, sortin
   };
   const rows = transactions.map((txn) => {
     const isPart = txn.part_id != null;
+    const linked = txn.transfer?.status === "linked";
     let row;
     const picker = categoryPicker({
       categories,
@@ -221,6 +276,28 @@ function transactionTable(transactions, categories, { showAccount = true, sortin
         }
       },
     });
+    if (linked) {
+      picker.disabled = true;
+      picker.title = "Linked as a transfer. Unlink it to change the category.";
+    }
+    const transferTag = !txn.transfer
+      ? null
+      : linked
+        ? h("button", { type: "button", class: "tag", title: "Show the other side", onclick: () => openTransfer(txn, transferDialog) }, `⇄ ${txn.transfer.other.account_name}`)
+        : h("button", { type: "button", class: "tag suggest", title: "Show the possible other side", onclick: () => openTransfer(txn, transferDialog) }, "Possible transfer");
+    const amazonTag = txn.amazon
+      ? h("button", {
+          type: "button",
+          class: `tag${txn.amazon.review ? " suggest" : ""}`,
+          title: txn.amazon.review ? "Sort this charge by its items" : "Show what this order bought",
+          onclick: () => openTransfer(txn, (t) => amazonDialog(t, categories, people)),
+        }, `📦 ${itemCount(txn.amazon.items).slice(0, 40)}`)
+      : null;
+    const note = noteEditor(txn);
+    const linkButton =
+      isPart || linked
+        ? null
+        : h("button", { type: "button", class: "small", title: "Link as transfer…", "aria-label": `Link ${txn.description} as a transfer`, onclick: () => openTransfer(txn, linkDialog) }, "Link…");
     const person = showPerson
       ? personPicker({
           people,
@@ -252,9 +329,23 @@ function transactionTable(transactions, categories, { showAccount = true, sortin
       },
       isPart ? "Edit split" : "Split",
     );
+    // A split transaction's parts share one checkbox state: deleting removes the whole transaction.
+    const check = selection
+      ? h("td", { class: "select" }, h("input", {
+          type: "checkbox",
+          "data-id": txn.id,
+          checked: selection.selected.has(txn.id),
+          "aria-label": `Select ${txn.description}`,
+          onchange: (event) => {
+            event.target.checked ? selection.selected.add(txn.id) : selection.selected.delete(txn.id);
+            selection.onChange();
+          },
+        }))
+      : null;
     row = h(
       "tr",
       { class: isPart ? "part-row" : null },
+      check,
       h("td", { class: "date" }, formatDate(txn.date)),
       showAccount ? h("td", { class: "hide-narrow nowrap" }, txn.account_name) : null,
       h(
@@ -262,12 +353,15 @@ function transactionTable(transactions, categories, { showAccount = true, sortin
         { class: "description" },
         txn.description,
         isPart ? h("span", { class: "tag" }, `part ${txn.part_number} of ${txn.parts_count}`) : null,
+        transferTag,
+        amazonTag,
+        note,
         showRecent && txn.recent?.length ? h("div", { class: "muted small recent" }, `Before: ${txn.recent.join(" · ")}`) : null,
       ),
       h("td", {}, picker),
       showPerson ? h("td", {}, person) : null,
       amountCell(txn.amount_cents),
-      h("td", { class: "num" }, splitButton),
+      h("td", { class: "num row-actions" }, linked ? null : splitButton, linkButton),
     );
     return row;
   });
@@ -277,20 +371,21 @@ function transactionTable(transactions, categories, { showAccount = true, sortin
     { class: "table-wrap" },
     h(
       "table",
-      {},
+      { class: "txn-table" },
       h(
         "thead",
         {},
         h(
           "tr",
           {},
+          selection ? h("th", { class: "select" }, allBox) : null,
           header("date", "Date"),
           showAccount ? header("account", "Account", { class: "hide-narrow" }) : null,
           header("description", "Description"),
           header("category", "Category"),
           showPerson ? h("th", {}, "Person") : null,
           header("amount", "Amount", { class: "num" }),
-          h("th", { class: "num" }, h("span", { class: "visually-hidden" }, "Split")),
+          h("th", { class: "num" }, h("span", { class: "visually-hidden" }, "Actions")),
         ),
       ),
       h("tbody", {}, rows),
@@ -437,6 +532,458 @@ async function splitDialog(transactionId, categories, people = []) {
 }
 
 // After a category change, offer to save a rule for similar descriptions.
+// ---- Transfers between your accounts ------------------------------------------
+// A card payment shows up twice: out of Checking and into the card. Linking the
+// two makes both Transfer, so neither counts as spending or income.
+
+const signedMoney = (cents) => (cents > 0 ? "+" : "") + currency.format(cents / 100);
+
+// One side of a transfer: account and date, description, amount.
+function transferSide(side) {
+  return h(
+    "div",
+    { class: "transfer-side" },
+    h("div", { class: "transfer-meta" }, h("strong", {}, side.account_name), h("span", { class: "muted" }, formatDate(side.date))),
+    h("div", { class: "transfer-desc" }, side.description),
+    h("div", { class: `amount ${side.amount_cents > 0 ? "in" : "out"}` }, signedMoney(side.amount_cents)),
+  );
+}
+
+const linkPair = (first, second, origin = "suggestion") =>
+  api("POST", "/api/transfers/link", { first_id: first.id, second_id: second.id, origin });
+const rejectPair = (first, second) => api("POST", "/api/transfers/reject", { first_id: first.id, second_id: second.id });
+const linkedMessage = (a, b) => {
+  const [out, into] = a.amount_cents < 0 ? [a, b] : [b, a];
+  return `Linked: ${currency.format(-out.amount_cents / 100)} from ${out.account_name} to ${into.account_name}.`;
+};
+const NOT_A_MATCH = "Marked as not a match. That pair won't be suggested again.";
+
+// A suggested pair, with Link and Not a match.
+function suggestionCard(suggestion) {
+  const { out, in: into } = suggestion;
+  return h(
+    "div",
+    { class: "card transfer-pair" },
+    transferSide(out),
+    h("span", { class: "transfer-arrow", "aria-hidden": "true" }, "→"),
+    transferSide(into),
+    h(
+      "div",
+      { class: "transfer-actions" },
+      suggestion.tie ? h("span", { class: "muted small" }, "One of several equally close matches") : null,
+      h("button", { class: "primary small", onclick: () => act(async () => { await linkPair(out, into); setFlash("ok", linkedMessage(out, into)); }) }, "Link"),
+      h("button", { class: "small", onclick: () => act(async () => { await rejectPair(out, into); setFlash("ok", NOT_A_MATCH); }) }, "Not a match"),
+    ),
+  );
+}
+
+// Choices for one possible other side, inside a dialog. close(true) after acting.
+function optionRow(txn, other, close, origin = "suggestion") {
+  const run = (work) => async () => {
+    try {
+      await work();
+    } catch (error) {
+      setFlash("error", error.message);
+    }
+    close(true);
+  };
+  return h(
+    "div",
+    { class: "transfer-option" },
+    transferSide(other),
+    h(
+      "div",
+      { class: "transfer-actions" },
+      h("button", { class: "primary small", onclick: run(async () => { await linkPair(txn, other, origin); setFlash("ok", linkedMessage(txn, other)); }) }, "Link"),
+      origin === "suggestion"
+        ? h("button", { class: "small", onclick: run(async () => { await rejectPair(txn, other); setFlash("ok", NOT_A_MATCH); }) }, "Not a match")
+        : null,
+    ),
+  );
+}
+
+// The popup behind a row's transfer tag: the linked other side (with Unlink),
+// or the suggested ones. Resolves true if something changed.
+function transferDialog(txn) {
+  const transfer = txn.transfer;
+  return openDialog("Transfer", (close) => {
+    const closeButton = h("button", { type: "button", onclick: () => close(false) }, "Close");
+    if (transfer.status === "linked") {
+      const unlink = async () => {
+        try {
+          await api("DELETE", `/api/transactions/${txn.id}/transfer`);
+          setFlash("ok", `Unlinked. ${txn.description} and the ${transfer.other.account_name} side have their earlier categories back.`);
+        } catch (error) {
+          setFlash("error", error.message);
+        }
+        close(true);
+      };
+      return [
+        h("h2", {}, "Linked transfer"),
+        h("p", {}, `The other side of this transfer is in ${transfer.other.account_name}:`),
+        h("div", { class: "transfer-option" }, transferSide(transfer.other)),
+        h("p", { class: "muted small" }, "Both sides count as Transfer, so neither is spending or income. Unlink if they don't belong together: both get back the categories they had before, and this pair won't be suggested again."),
+        h("div", { class: "dialog-buttons" }, closeButton, h("button", { type: "button", onclick: unlink }, "Unlink")),
+      ];
+    }
+    const several = transfer.options.length > 1;
+    return [
+      h("h2", {}, "Possible transfer"),
+      h("p", {}, several
+        ? "Each of these is the same amount going the other way a few days apart. Link the one that's the other side of this transfer."
+        : "This looks like the other side of the same transfer: the same amount going the other way, a few days apart."),
+      transfer.options.map((other) => optionRow(txn, other, close)),
+      h("div", { class: "dialog-buttons" }, closeButton),
+    ];
+  });
+}
+
+// "Link as transfer…": pick the other side yourself. Resolves true if linked.
+async function linkDialog(txn) {
+  const data = await api("GET", `/api/transactions/${txn.id}/transfer-candidates`);
+  return openDialog("Link as transfer", (close) => [
+    h("h2", {}, "Link as transfer"),
+    h("div", { class: "transfer-option" }, transferSide(data.transaction)),
+    h("p", {}, "Pick the other side: the same amount going the other way in another account, within 30 days."),
+    data.candidates.length
+      ? data.candidates.map((other) => optionRow(data.transaction, other, close, "manual"))
+      : h("div", { class: "card empty" }, "Nothing matches. None of your other accounts has the same amount going the other way within 30 days."),
+    h("div", { class: "dialog-buttons" }, h("button", { type: "button", onclick: () => close(false) }, "Close")),
+  ]);
+}
+
+// "Don't flag ones like this": save a description pattern. Resolves true if saved.
+function ignoreDialog(txn) {
+  return openDialog("Don't flag transfers like this", (close) => {
+    const input = h("input", { type: "text", value: txn.suggested_pattern || txn.description, "aria-label": "Description words" });
+    const error = h("div", { class: "flash error", role: "alert", hidden: true });
+    const save = async (event) => {
+      event.preventDefault();
+      try {
+        const saved = await api("POST", "/api/transfer-ignores", { pattern: input.value });
+        setFlash("ok", `Transfers mentioning “${saved.pattern}” won't be flagged. You can undo this in Settings.`);
+        close(true);
+      } catch (e) {
+        error.textContent = e.message;
+        error.hidden = false;
+      }
+    };
+    return [
+      h(
+        "form",
+        { onsubmit: save },
+        h("h2", {}, "Don't flag transfers like this"),
+        h("p", {}, "Transfers whose description has these words won't be flagged as having no match, for example a monthly transfer to a savings account you don't import."),
+        h("label", { class: "field" }, h("span", {}, "Description has the words"), input),
+        error,
+        h("div", { class: "dialog-buttons" }, h("button", { type: "button", onclick: () => close(false) }, "Cancel"), h("button", { type: "submit", class: "primary" }, "Save")),
+      ),
+    ];
+  });
+}
+
+// The review list's transfer groups on the Import page.
+function transferReview(review, categories) {
+  const sections = [];
+  if (review.suggestions.length) {
+    sections.push(
+      h("h2", {}, "Possible transfers ", h("span", { class: "count" }, `(${review.suggestions.length})`)),
+      h("p", { class: "muted" }, "Each pair is the same amount out of one of your accounts and into another, a few days apart. Link them so both count as a transfer instead of spending, or say they're not a match."),
+      h("div", { class: "transfer-list" }, review.suggestions.map(suggestionCard)),
+    );
+  }
+  if (review.unmatched.length) {
+    // Grouped by description, so a monthly transfer to an account you don't
+    // import is one line to dismiss, not one per month.
+    const groups = new Map();
+    for (const txn of review.unmatched) {
+      const key = txn.suggested_pattern || txn.description;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(txn);
+    }
+    const unmatchedRow = (txn) =>
+      h(
+        "tr",
+        {},
+        h("td", { class: "date" }, formatDate(txn.date)),
+        h("td", { class: "hide-narrow nowrap" }, txn.account_name),
+        h("td", { class: "description" }, txn.description),
+        amountCell(txn.amount_cents),
+        h(
+          "td",
+          { class: "actions" },
+          h("button", { class: "small", onclick: () => openTransfer(txn, linkDialog) }, "Link…"),
+          h("button", {
+            class: "small",
+            title: "The money went to or came from an account you don't import",
+            onclick: () => act(async () => { await api("POST", `/api/transactions/${txn.id}/untracked`); setFlash("ok", `${txn.description} won't be flagged again.`); }),
+          }, "Other side isn't tracked"),
+        ),
+      );
+    const groupCard = ([pattern, txns]) => {
+      const total = txns.reduce((sum, t) => sum + t.amount_cents, 0);
+      const dates = txns.map((t) => t.date).sort();
+      const span = dates.length > 1 ? `${formatDate(dates[0])} – ${formatDate(dates.at(-1))}` : formatDate(dates[0]);
+      return h(
+        "details",
+        { class: "card unmatched-group" },
+        h(
+          "summary",
+          {},
+          h("span", { class: "unmatched-name" }, h("strong", {}, pattern), h("span", { class: "muted small" }, `${plural(txns.length, "transfer")} · ${signedMoney(total)} · ${span}`)),
+          h("button", {
+            class: "small",
+            onclick: async (event) => {
+              event.preventDefault(); // don't toggle the group
+              if (await ignoreDialog({ ...txns[0], suggested_pattern: pattern })) await render();
+            },
+          }, "Don't flag ones like this"),
+        ),
+        simpleTable([["Date"], ["Account", "hide-narrow"], ["Description"], ["Amount", "num"], [""]], txns.map(unmatchedRow)),
+      );
+    };
+    sections.push(
+      h("h2", {}, "Transfers with no match ", h("span", { class: "count" }, `(${review.unmatched.length})`)),
+      h("p", { class: "muted" }, "These transfers have no other side in your other accounts, even though those accounts' imports cover the dates. Usually the money went to an account you don't import (another card, savings): say so with “Don't flag ones like this”. Open a group to link one yourself."),
+      h("div", { class: "transfer-list" }, [...groups].map(groupCard)),
+    );
+  }
+  return sections;
+}
+
+// Show a row's transfer tag popup, or the Link as transfer picker.
+async function openTransfer(txn, dialog) {
+  try {
+    if (await dialog(txn)) await render();
+  } catch (error) {
+    setFlash("error", error.message);
+    await render();
+  }
+}
+
+// ---- Amazon orders ------------------------------------------------------------
+// An occasional catch-up: Amazon's order history file says what each Amazon
+// charge bought, so a charge can be sorted, or split, by item.
+
+const isSpending = (c) => c.kind === "expense";
+
+// Items of a matched charge with a category (and person) box each, plus Apply.
+// detail: { charge, order: { items } }. onDone() runs after Apply.
+function amazonItemsForm(detail, categories, people, onDone) {
+  const rows = detail.order.items.map((item) => {
+    const category = categoryPicker({
+      categories,
+      selectedId: item.category_id,
+      blank: "Pick a category",
+      filter: isSpending,
+      label: `Category for ${item.product_name}`,
+    });
+    const person = people.length ? personPicker({ people, selectedId: item.person_id, label: `Whose is ${item.product_name}` }) : null;
+    return { item, category, person };
+  });
+  const error = h("div", { class: "flash error", role: "alert", hidden: true });
+  const apply = async () => {
+    try {
+      const result = await api("POST", `/api/amazon/charges/${detail.charge.id}/apply`, {
+        items: rows.map(({ item, category, person }) => ({
+          item_id: item.id,
+          category_id: category.value ? Number(category.value) : null,
+          person_id: person?.value ? Number(person.value) : null,
+        })),
+      });
+      setFlash("ok", result.split
+        ? `Split ${detail.charge.description} into ${result.parts} parts by item.`
+        : `Sorted ${detail.charge.description}.`);
+      onDone();
+    } catch (e) {
+      error.textContent = e.message;
+      error.hidden = false;
+    }
+  };
+  return h(
+    "div",
+    { class: "amazon-form" },
+    h("div", { class: "amazon-items" }, rows.map(({ item, category, person }) =>
+      h(
+        "div",
+        { class: "amazon-item" },
+        h("div", { class: "item-name", title: item.product_name }, item.product_name, item.quantity > 1 ? ` × ${item.quantity}` : ""),
+        h("span", { class: "item-price amount out" }, signedMoney(-item.total_cents)),
+        category,
+        person,
+      ))),
+    error,
+    h("div", { class: "dialog-buttons" }, h("button", { type: "button", class: "primary small", onclick: apply }, "Apply")),
+  );
+}
+
+// One line about a charge: date, account, description, amount.
+function chargeLine(charge) {
+  return h(
+    "div",
+    { class: "amazon-charge" },
+    h("span", {}, h("strong", {}, formatDate(charge.date)), ` · ${charge.account_name} · ${charge.description}`),
+    h("span", { class: `amount ${charge.amount_cents > 0 ? "in" : "out"}` }, signedMoney(charge.amount_cents)),
+  );
+}
+
+const itemCount = (items) => (items.length === 1 ? items[0].product_name : plural(items.length, "item"));
+
+// "Wrong order?" / a tie: pick which order the charge was for. Resolves true if changed.
+async function amazonOrderDialog(charge, options) {
+  return openDialog("Which order?", (close) => [
+    h("h2", {}, "Which order was this charge for?"),
+    chargeLine(charge),
+    h("p", { class: "muted small" }, "These orders add up to the same amount and shipped or were ordered around then."),
+    options.map((order) =>
+      h(
+        "div",
+        { class: "transfer-option" },
+        h(
+          "div",
+          {},
+          h("div", { class: "muted small" }, `Order ${order.order_id} · ordered ${formatDate(order.order_date)}`
+            + (order.ship_date ? ` · shipped ${formatDate(order.ship_date)}` : " · whole order")),
+          h("ul", { class: "item-list" }, order.items.map((i) => h("li", {}, i.product_name))),
+        ),
+        h("button", {
+          class: "primary small",
+          onclick: async () => {
+            try {
+              await api("PUT", `/api/amazon/charges/${charge.id}/order`, { order_id: order.order_id, ship_date: order.ship_date });
+            } catch (e) {
+              setFlash("error", e.message);
+            }
+            close(true);
+          },
+        }, "This one"),
+      ),
+    ),
+    h("div", { class: "dialog-buttons" }, h("button", { type: "button", onclick: () => close(false) }, "Cancel")),
+  ]);
+}
+
+async function wrongOrder(charge) {
+  const detail = await api("GET", `/api/amazon/charges/${charge.id}`);
+  if (!detail.alternatives.length) return setFlash("error", "No other order matches this charge's amount and date.");
+  if (await amazonOrderDialog(detail.charge, detail.alternatives)) await render();
+}
+
+// The popup behind a row's items tag.
+async function amazonDialog(txn, categories, people) {
+  const detail = await api("GET", `/api/amazon/charges/${txn.id}`);
+  return openDialog("Amazon order", (close) => [
+    h("h2", {}, "Amazon order"),
+    chargeLine(detail.charge),
+    h("p", { class: "muted small" }, `Order ${detail.order.order_id} · ordered ${formatDate(detail.order.order_date)}`
+      + (detail.order.ship_date ? ` · shipped ${formatDate(detail.order.ship_date)}` : "")),
+    detail.review
+      ? amazonItemsForm(detail, categories, people, () => close(true))
+      : h("ul", { class: "item-list" }, detail.order.items.map((i) =>
+          h("li", {}, i.product_name, " ", h("span", { class: "muted nowrap" }, currency.format(i.total_cents / 100))))),
+    h(
+      "div",
+      { class: "dialog-buttons" },
+      detail.alternatives.length
+        ? h("button", { type: "button", class: "link", onclick: async () => { if (await amazonOrderDialog(detail.charge, detail.alternatives)) close(true); } }, "Wrong order?")
+        : null,
+      h("button", { type: "button", onclick: () => close(false) }, "Close"),
+    ),
+  ]);
+}
+
+// The Import page's Amazon card: what's stored, and the catch-up button.
+function amazonCard(status) {
+  const input = h("input", {
+    type: "file",
+    accept: ".csv,.CSV,text/csv",
+    hidden: true,
+    onchange: () => {
+      const file = input.files[0];
+      input.value = "";
+      if (!file) return;
+      act(async () => {
+        const result = await api("POST", "/api/amazon/import", await file.text(), { "Content-Type": "text/csv" });
+        const parts = [`Amazon orders: read ${plural(result.orders, "order")} (${result.new_orders} new)`, `matched ${plural(result.matched, "more charge")}`];
+        if (result.unmatched_charges) parts.push(`${plural(result.unmatched_charges, "Amazon charge")} had no order in the file`);
+        let text = parts.join(", ") + ".";
+        if (result.to_review) text += ` ${result.to_review} to review below.`;
+        setFlash("ok", text);
+      });
+    },
+  });
+  const details = status.orders
+    ? `${plural(status.orders, "order")} stored, the latest from ${formatDate(status.latest)}`
+    : "Catch up on Amazon charges: import Amazon's order history to see what each charge bought and split it by item.";
+  return h(
+    "div",
+    { class: "card account" },
+    h("div", {}, h("strong", {}, "Amazon orders"), h("span", { class: "muted" }, details)),
+    input,
+    h("button", { onclick: () => input.click(), title: "Amazon: Account → Request your data → Your Orders, then pick Order History.csv" }, "Import Amazon orders"),
+  );
+}
+
+// The Import page's "Amazon orders to review" group.
+function amazonReview(data, categories, people) {
+  if (!data.charges.length && !data.ties.length) return [];
+  const ties = data.ties.map((tie) =>
+    h(
+      "div",
+      { class: "card amazon-card" },
+      chargeLine(tie.charge),
+      h("p", {}, `${tie.options.length} orders fit this charge equally well. `,
+        h("button", { class: "link", onclick: async () => { if (await amazonOrderDialog(tie.charge, tie.options)) await render(); } }, "Pick the order")),
+    ),
+  );
+  const charges = data.charges.map((entry) =>
+    h(
+      "div",
+      { class: "card amazon-card" },
+      chargeLine(entry.charge),
+      entry.alternatives ? h("button", { class: "link small", onclick: () => wrongOrder(entry.charge) }, "Wrong order?") : null,
+      amazonItemsForm({ charge: entry.charge, order: entry.order }, categories, people, () => render()),
+    ),
+  );
+  const count = data.charges.length + data.ties.length;
+  return [
+    h("h2", {}, "Amazon orders to review ", h("span", { class: "count" }, `(${count})`)),
+    h("p", { class: "muted" }, "Each Amazon charge with its items. Check the categories and press Apply: one category for the charge, or a split when the items differ. Categories you pick are remembered for the same product next time."),
+    h("div", { class: "transfer-list" }, ties, charges),
+  ];
+}
+
+// Settings: Amazon Departments -> your categories, the fallback guess.
+function amazonDepartmentsSection(departments, categories) {
+  if (!departments.length) return null;
+  const rows = departments.map((d) =>
+    h(
+      "tr",
+      {},
+      h("td", {}, d.department),
+      h("td", { class: "num" }, d.items),
+      h("td", {}, categoryPicker({
+        categories,
+        selectedId: d.category_id,
+        blank: "No guess",
+        filter: isSpending,
+        label: `Category for Amazon department ${d.department}`,
+        onPick: (categoryId) => act(async () => {
+          await api("PUT", "/api/amazon/departments", { department: d.department, category_id: categoryId });
+          setFlash("ok", `Amazon “${d.department}” items will be guessed as ${categoryId ? categoryLabel(categories.find((c) => c.id === categoryId)) : "nothing"}.`);
+        }),
+      })),
+    ),
+  );
+  return h(
+    "section",
+    {},
+    h("h2", {}, "Amazon departments"),
+    h("p", { class: "muted" }, "When reviewing Amazon orders, an item you haven't sorted before is guessed from Amazon's department. A product you've sorted before always uses your last choice."),
+    simpleTable([["Department"], ["Items", "num"], ["Guess"]], rows),
+  );
+}
+
 function showRulePrompt(row, result, categories, columns) {
   row.nextElementSibling?.classList.contains("rule-prompt") && row.nextElementSibling.remove();
   if (!result.suggested_pattern) return;
@@ -491,13 +1038,19 @@ function showRulePrompt(row, result, categories, columns) {
 // ---- Pages -----------------------------------------------------------------
 
 async function importPage() {
-  const [accounts, batches, review, categories, people] = await Promise.all([
+  const [accounts, batches, review, categories, people, transferData, amazonData] = await Promise.all([
     api("GET", "/api/accounts"),
     api("GET", "/api/batches"),
     api("GET", "/api/transactions?needs_review=1&with_recent=1"),
     api("GET", "/api/categories"),
     api("GET", "/api/people"),
+    api("GET", "/api/transfers"),
+    api("GET", "/api/amazon"),
   ]);
+  // Amazon charges waiting in their own list aren't repeated below.
+  const inAmazonList = new Set([...amazonData.charges, ...amazonData.ties].map((entry) => entry.charge.id));
+  review.rows = review.rows.filter((row) => !inAmazonList.has(row.id));
+  review.count = review.rows.length;
 
   return h(
     "div",
@@ -506,9 +1059,12 @@ async function importPage() {
 
     h("h2", {}, "Accounts"),
     accounts.length
-      ? h("div", { class: "accounts" }, accounts.map(accountCard))
+      ? h("div", { class: "accounts" }, accounts.map(accountCard), amazonCard(amazonData.status))
       : h("p", { class: "muted" }, "Add an account to start importing."),
     addAccountForm(),
+
+    transferReview(transferData, categories),
+    amazonReview(amazonData, categories, people),
 
     h("h2", {}, people.length ? "Needs a category or person " : "Needs a category ", h("span", { class: "count" }, `(${review.count})`)),
     review.count
@@ -584,7 +1140,11 @@ async function runImport(account, filename, text, options) {
   ];
   if (result.rows_pending) parts.push(`${result.rows_pending} pending left out until they clear`);
   if (result.rows_zero) parts.push(`${result.rows_zero} for $0.00 left out`);
+  if (result.transfers_linked) parts.push(`${plural(result.transfers_linked, "transfer")} linked`);
   let summary = parts.join(", ") + ".";
+  if (result.transfer_suggestions) {
+    summary += ` ${plural(result.transfer_suggestions, "possible transfer")} to review below.`;
+  }
   if (result.uncategorized) {
     const n = result.uncategorized;
     summary += ` ${plural(n, "transaction")} ${n === 1 ? "needs" : "need"} a category below.`;
@@ -605,7 +1165,7 @@ function openDialog(label, build) {
       event.preventDefault();
       close(null);
     });
-    dialog.append(...build(close));
+    dialog.append(...build(close).flat(Infinity).filter((child) => child != null));
     document.body.append(dialog);
     dialog.showModal();
   });
@@ -859,8 +1419,13 @@ const GROUPINGS = [
 ];
 
 const FILTER_DEFAULTS = {
-  period: "all", start: "", end: "", account: "", category: "", exact: "", person: "", q: "", group: "", sort: "date", dir: "desc",
+  period: "all", start: "", end: "", account: "", category: "", exact: "", person: "", q: "", show: "", group: "", sort: "date", dir: "desc",
 };
+
+const SHOW_OPTIONS = [
+  ["", "All transactions"],
+  ["nomatch", "Transfers with no match"],
+];
 
 // Sorting a text column starts A→Z; dates and amounts start largest first.
 const TEXT_COLUMNS = new Set(["description", "category", "account"]);
@@ -926,6 +1491,7 @@ function apiQuery(filters) {
   if (filters.category && filters.exact) set("category_exact", "1");
   set("person", filters.person);
   set("q", filters.q.trim());
+  if (filters.show === "nomatch") set("no_match", "1");
   return params;
 }
 
@@ -948,8 +1514,54 @@ async function transactionsPage() {
   const results = h("div", { "aria-live": "polite" });
   let latestRequest = 0;
 
+  // Rows picked for deleting. Cleared whenever the list changes, so nothing
+  // hidden by a filter can be deleted by accident.
+  const selected = new Set();
+  let shownRows = [];
+  const selectionBar = h("div", { class: "selection-bar", hidden: true });
+  function syncSelection() {
+    for (const box of results.querySelectorAll("input[data-id]")) box.checked = selected.has(Number(box.dataset.id));
+    const all = results.querySelector("input.select-all");
+    const shownIds = new Set(shownRows.map((r) => r.id));
+    if (all) {
+      all.checked = shownIds.size > 0 && [...shownIds].every((id) => selected.has(id));
+      all.indeterminate = !all.checked && selected.size > 0;
+    }
+    selectionBar.hidden = selected.size === 0;
+    // A split transaction's parts add up to its amount, so summing rows is right.
+    const total = shownRows.filter((r) => selected.has(r.id)).reduce((sum, r) => sum + r.amount_cents, 0);
+    selectionBar.replaceChildren(
+      h("span", {}, h("strong", {}, `${plural(selected.size, "transaction")} selected`), h("span", { class: "muted" }, ` · ${signedMoney(total)}`)),
+      h("button", { type: "button", class: "small danger", onclick: deleteSelected }, "Delete selected"),
+      h("button", { type: "button", class: "small", onclick: () => { selected.clear(); syncSelection(); } }, "Clear selection"),
+    );
+  }
+  async function deleteSelected() {
+    const rows = shownRows.filter((r) => selected.has(r.id));
+    const ids = [...selected];
+    const sure = await openDialog("Delete transactions", (close) => [
+      h("h2", {}, `Delete ${plural(ids.length, "transaction")}?`),
+      ids.length <= 5
+        ? h("ul", { class: "delete-list" }, [...new Map(rows.map((r) => [r.id, r])).values()].map((r) =>
+            h("li", {}, `${formatDate(r.date)} · ${r.description} · `, h("span", { class: "nowrap" }, signedMoney(r.amount_cents)))))
+        : null,
+      h("p", {}, "They're removed from every total, chart and budget. Split parts go with them, and linked transfers are unlinked."),
+      h("p", { class: "muted small" }, "This can't be undone here, but importing a file that has them adds them back."),
+      h("div", { class: "dialog-buttons" },
+        h("button", { type: "button", onclick: () => close(false) }, "Cancel"),
+        h("button", { type: "button", class: "danger", onclick: () => close(true) }, "Delete")),
+    ]);
+    if (!sure) return;
+    await act(async () => {
+      const result = await api("POST", "/api/transactions/delete", { ids });
+      const unlinked = result.transfers_unlinked ? ` ${plural(result.transfers_unlinked, "transfer")} unlinked.` : "";
+      setFlash("ok", `Deleted ${plural(result.deleted, "transaction")}.${unlinked}`);
+    });
+  }
+
   async function update(changes = {}) {
     filters = { ...filters, ...changes };
+    selected.clear();
     writeFilters(filters);
     syncControls();
     const request = ++latestRequest;
@@ -965,7 +1577,9 @@ async function transactionsPage() {
         filters.group ? api("GET", `/api/totals?${totalsQuery}`) : null,
       ]);
       if (request !== latestRequest) return; // a newer change is already loading
+      shownRows = list.rows;
       results.replaceChildren(...renderResults(list, totals));
+      syncSelection();
     } catch (error) {
       if (request === latestRequest) {
         results.replaceChildren(h("div", { class: "flash error", role: "alert" }, error.message));
@@ -991,6 +1605,7 @@ async function transactionsPage() {
       list.count
         ? transactionTable(list.rows, categories, {
             people,
+            selection: { selected, onChange: syncSelection },
             sorting: {
               sort: filters.sort,
               dir: filters.dir,
@@ -1091,6 +1706,7 @@ async function transactionsPage() {
     },
   });
   const group = h("select", { onchange: () => update({ group: group.value }) });
+  const show = h("select", { onchange: () => update({ show: show.value }) });
   const clear = h("button", { type: "button", onclick: () => update({ ...FILTER_DEFAULTS, sort: filters.sort, dir: filters.dir }) }, "Clear filters");
 
   function syncControls() {
@@ -1107,6 +1723,7 @@ async function transactionsPage() {
     person.replaceChildren(
       ...options([["", "Everyone"], ["household", "Household"], ...people.map((p) => [String(p.id), p.name])], filters.person),
     );
+    show.replaceChildren(...options(SHOW_OPTIONS, filters.show));
     group.replaceChildren(...options(GROUPINGS.filter(([key]) => key !== "person" || people.length), filters.group));
     dateRange.hidden = filters.period !== "custom";
     start.value = filters.start;
@@ -1129,9 +1746,11 @@ async function transactionsPage() {
       field("Category", category),
       people.length ? field("Person", person) : null,
       field("Search", search),
+      field("Show", show),
       field("Group totals by", group),
       clear,
     ),
+    selectionBar,
     results,
   );
   await update();
@@ -1170,7 +1789,7 @@ const confirmed = (message, action) => () => {
 async function settingsPage() {
   const thisMonth = periodRange({ period: "this-month" });
   const lastMonth = periodRange({ period: "last-month" });
-  const [people, budgetData, categories, rules, bankCategories, accounts, layouts, thisMonthTotals, lastMonthTotals] = await Promise.all([
+  const [people, budgetData, categories, rules, bankCategories, accounts, layouts, thisMonthTotals, lastMonthTotals, transferSettings, amazonDepartments] = await Promise.all([
     api("GET", "/api/people"),
     api("GET", "/api/budgets"),
     api("GET", "/api/categories"),
@@ -1180,6 +1799,8 @@ async function settingsPage() {
     api("GET", "/api/layouts"),
     api("GET", `/api/totals?group=subcategory&start=${thisMonth[0]}&end=${thisMonth[1]}`),
     api("GET", `/api/totals?group=subcategory&start=${lastMonth[0]}&end=${lastMonth[1]}`),
+    api("GET", "/api/transfer-settings"),
+    api("GET", "/api/amazon/departments"),
   ]);
   const ruleTargets = (c) => c.kind !== "uncategorized";
 
@@ -1191,11 +1812,13 @@ async function settingsPage() {
       peopleSection(people),
       budgetsSection(budgetData, categories, people, thisMonthTotals, lastMonthTotals),
       rulesSection(rules, categories, ruleTargets, people),
+      transfersSection(transferSettings),
+      amazonDepartmentsSection(amazonDepartments, categories),
       categoriesSection(categories),
       bankCategoriesSection(bankCategories, categories, ruleTargets),
       accountsSection(accounts),
       layoutsSection(layouts),
-    ].map(collapsible),
+    ].filter(Boolean).map(collapsible),
   );
 }
 
@@ -1546,6 +2169,50 @@ function rulesSection(rules, categories, isTarget, people) {
 }
 
 const KIND_LABELS = { expense: "Spending", income: "Income", transfer: "Built in", uncategorized: "Built in" };
+
+function transfersSection(settings) {
+  const toggle = h("input", {
+    type: "checkbox",
+    checked: settings.auto_link,
+    onchange: () =>
+      act(async () => {
+        await api("PUT", "/api/transfer-settings", { auto_link: toggle.checked });
+        setFlash("ok", toggle.checked ? "Clear transfer matches will now link on import." : "Transfer matches will wait for you to confirm them.");
+      }),
+  });
+  const record = settings.decided
+    ? `So far you've confirmed ${settings.confirmed} of ${plural(settings.decided, "suggestion")}.`
+    : "You haven't confirmed or turned down any suggestions yet.";
+  const ignoreRows = settings.ignores.map((ignore) =>
+    h(
+      "tr",
+      {},
+      h("td", {}, ignore.pattern),
+      h(
+        "td",
+        { class: "num" },
+        h("button", {
+          class: "small",
+          onclick: () => act(async () => { await api("DELETE", `/api/transfer-ignores/${ignore.id}`); setFlash("ok", `Transfers mentioning “${ignore.pattern}” will be flagged again.`); }),
+        }, "Remove"),
+      ),
+    ),
+  );
+  return h(
+    "section",
+    {},
+    h("h2", {}, "Transfers"),
+    h("p", { class: "muted" }, "Payments between your accounts are suggested as transfers on the Import page for you to confirm. Once the suggestions look right, you can let clear ones link by themselves. Ties, and transactions you categorized by hand, always ask."),
+    h("div", { class: "card" },
+      h("label", { class: "toggle" }, toggle, "Link clear matches automatically"),
+      h("p", { class: "muted small", style: "margin: 6px 0 0" }, record),
+    ),
+    h("h3", {}, "Not flagged as having no match"),
+    settings.ignores.length
+      ? simpleTable([["Description has the words"], ["", "num"]], ignoreRows)
+      : h("p", { class: "muted" }, "None yet. Use “Don't flag ones like this” on the Import page."),
+  );
+}
 
 function categoriesSection(categories) {
   const groups = categories.filter((c) => c.parent_id == null && (c.kind === "expense" || c.kind === "income"));
@@ -2136,6 +2803,7 @@ function transactionsHash(link) {
   if (link.category_id != null) params.set("category", link.category_id);
   if (link.text) params.set("q", link.text);
   if (link.person != null) params.set("person", link.person);
+  if (link.account_id != null) params.set("account", link.account_id);
   if (link.sort) params.set("sort", link.sort);
   if (link.dir) params.set("dir", link.dir);
   const query = params.toString();

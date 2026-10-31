@@ -130,7 +130,7 @@ class AskTest(QueryTestCase):
 
     def test_question_list(self):
         listed = question_list(self.conn, OCT_10)
-        self.assertEqual(len(listed["questions"]), 9)
+        self.assertEqual(len(listed["questions"]), 10)
         periods = [o["value"] for o in listed["options"]["period"]]
         self.assertIn("this-month", periods)
         self.assertEqual([p for p in periods if p.startswith("month:")], ["month:2026-10", "month:2026-09", "month:2025-12"])

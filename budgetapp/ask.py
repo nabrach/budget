@@ -9,7 +9,7 @@ link are optional.
 
 from datetime import date, timedelta
 
-from . import budgets
+from . import budgets, transfers
 from .categorize import suggest_pattern
 from .errors import UserError
 from .queries import (
@@ -346,6 +346,44 @@ def over_budget(conn, today):
     }
 
 
+def paid_toward(conn, today, account, period):
+    if account in (None, ""):  # the first account, as the dropdown shows
+        first = conn.execute("SELECT id FROM accounts ORDER BY name LIMIT 1").fetchone()
+        if first is None:
+            raise UserError("Add an account first, on the Import page.")
+        account = first["id"]
+    try:
+        account_id = int(account)
+    except (TypeError, ValueError):
+        raise UserError("Pick an account.") from None
+    row = conn.execute("SELECT name FROM accounts WHERE id = ?", (account_id,)).fetchone()
+    if row is None:
+        raise UserError("That account doesn't exist.")
+    flt, phrase, _ = resolve_period(period, today)
+    sources = transfers.paid_toward(conn, account_id, flt.start, flt.end)
+    total = sum(s["cents"] for s in sources)
+    count = sum(s["count"] for s in sources)
+    waiting = sum(
+        1 for s in transfers.suggestions(conn)
+        if s["in"]["account_name"] == row["name"] and (not flt.start or s["in"]["date"] >= flt.start)
+        and (not flt.end or s["in"]["date"] <= flt.end)
+    )
+    if count == 0:
+        text = f"No linked payments went into {row['name']} {phrase}."
+    else:
+        froms = " and ".join(s["from_account"] for s in sources)
+        text = f"You paid {_money(total)} toward {row['name']} {phrase}, across {_plural(count, 'payment')} from {froms}."
+    if waiting:
+        text += f" {_plural(waiting, 'possible transfer')} into it {'is' if waiting == 1 else 'are'} waiting for you to review on the Import page."
+    result = {"text": text, "link": _link(flt, account_id=account_id)}
+    if len(sources) > 1:
+        result["table"] = {
+            "headers": ["From", "Payments", "Amount"],
+            "rows": [[s["from_account"], str(s["count"]), _money(s["cents"])] for s in sources],
+        }
+    return result
+
+
 # Templates: strings are text, dicts are slots.
 QUESTIONS = [
     ("spend_on", spend_on, ["How much did ", {"slot": "person"}, " spend on ", {"slot": "category"}, " ", {"slot": "period"}, "?"]),
@@ -357,6 +395,7 @@ QUESTIONS = [
     ("average_monthly", average_monthly, ["What's my average monthly spending on ", {"slot": "category"}, " over the last ", {"slot": "months"}, " full months?"]),
     ("saved", saved, ["Did I save money ", {"slot": "period"}, "?"]),
     ("over_budget", over_budget, ["Am I over budget this month?"]),
+    ("paid_toward", paid_toward, ["How much did I pay toward ", {"slot": "account"}, " ", {"slot": "period"}, "?"]),
 ]
 _HANDLERS = {key: handler for key, handler, _ in QUESTIONS}
 
@@ -369,6 +408,7 @@ DEFAULTS = {
     "count": "5",
     "months": "3",
     "merchant": "",
+    "account": "",
 }
 
 
@@ -384,6 +424,7 @@ def question_list(conn, today: date):
             "period": period_options(conn, today),
             "count": [{"value": str(n), "label": str(n)} for n in (3, 5, 10)],
             "months": [{"value": str(n), "label": str(n)} for n in (3, 6, 12)],
+            "account": [{"value": str(row["id"]), "label": row["name"]} for row in conn.execute("SELECT id, name FROM accounts ORDER BY name")],
         },
         "defaults": DEFAULTS,
     }
